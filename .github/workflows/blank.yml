@@ -1,0 +1,161 @@
+name: AYAM
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+
+      # =========================
+      # CONFIGURE RDP
+      # =========================
+      - name: Configure RDP
+        shell: powershell
+        run: |
+          Write-Host "Configuring Remote Desktop..."
+
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name 'fDenyTSConnections' `
+            -Value 0 `
+            -Force
+
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name 'UserAuthentication' `
+            -Value 1 `
+            -Force
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
+
+          Restart-Service `
+            -Name TermService `
+            -Force
+
+          Write-Host "RDP enabled."
+
+      # =========================
+      # CREATE RDP USER
+      # =========================
+      - name: Create RDP User
+        shell: powershell
+        run: |
+          $username = "RDPUser"
+          $password = "Rdp@2026!"
+
+          $securePassword = ConvertTo-SecureString `
+            $password `
+            -AsPlainText `
+            -Force
+
+          $existingUser = Get-LocalUser `
+            -Name $username `
+            -ErrorAction SilentlyContinue
+
+          if (-not $existingUser) {
+
+            New-LocalUser `
+              -Name $username `
+              -Password $securePassword `
+              -AccountNeverExpires `
+              -PasswordNeverExpires `
+              -Description "RDP User"
+
+            Write-Host "RDP user created."
+          }
+          else {
+            Write-Host "RDP user already exists."
+
+            Set-LocalUser `
+              -Name $username `
+              -Password $securePassword
+          }
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Username: $username"
+
+      # =========================
+      # CONNECT TAILSCALE
+      # =========================
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          hostname: win-${{ github.run_id }}
+          version: latest
+          use-cache: false
+          log-mode: normal
+
+      # =========================
+      # GET TAILSCALE IP
+      # =========================
+      - name: Get Tailscale IP
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 5
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "TAILSCALE STATUS"
+          Write-Host "=============================="
+
+          & $tailscale status
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "TAILSCALE IPv4"
+          Write-Host "=============================="
+
+          $ip = (& $tailscale ip -4 | Select-Object -First 1).Trim()
+
+          if ([string]::IsNullOrWhiteSpace($ip)) {
+            Write-Error "Tailscale IPv4 tidak ditemukan."
+            exit 1
+          }
+
+          Write-Host "Tailscale IPv4: $ip"
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "RDP INFORMATION"
+          Write-Host "=============================="
+
+          Write-Host "Address : $ip"
+          Write-Host "Port    : 3389"
+          Write-Host "Username: RDPUser"
+          Write-Host "Password: Rdp@2026!"
+
+      # =========================
+      # KEEP RUNNER ALIVE
+      # =========================
+      - name: Keep RDP Alive
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "RDP IS READY"
+          Write-Host "=============================="
+          Write-Host "Runner ID : $env:GITHUB_RUN_ID"
+          Write-Host "Hostname  : win-$env:GITHUB_RUN_ID"
+          Write-Host "Timeout   : 6 hours"
+          Write-Host "=============================="
+
+          while ($true) {
+            Start-Sleep -Seconds 60
+          }
